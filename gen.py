@@ -2,6 +2,7 @@ import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 import itertools
+from functools import reduce
 from scipy.special import comb
 from math import *
 from sdf import *
@@ -107,43 +108,57 @@ def exponential_scale(x, min, max):
 def segmented_line(p0, p1, point_distance=0.5):
     return split_line(p0, p1, split_count(p0, p1, point_distance))
 
-def vary_line(
-    ps,
+def with_accumulated_length_fractions(path):
+    return list(zip(itertools.accumulate([
+        np.linalg.norm(p1-p0)/length(path)
+        for p0, p1 in zip(path, path[1:])
+    ]), list(zip(path, path[1:]))))
+
+def vary_path(
+    path,
     f_radius=lambda x: np.uniform(0, 0.2),
     f_angle=lambda: np.random.uniform(0, 2*pi)
 ):
-
-    line = [ps[0]]
-    total_length = length(ps)
-    cumulative_length = 0
-    for _p0, _p1 in zip(ps, ps[1:-1]):
-        cumulative_length += np.linalg.norm(_p1-_p0)
-        _p3 = circle_point(
-            _p1-_p0,
-            f_radius(cumulative_length/total_length),
+    return np.array([path[0]]+[
+        p1 + circle_point(
+            p1-p0,
+            f_radius(l_acc),
             f_angle(),
             0
         )
-        line.append(_p1+_p3)
-
-    line.append(ps[-1])
-    return np.array(line)
+        for l_acc, (p0, p1) in with_accumulated_length_fractions(path)[:-1]
+    ]+[path[-1]])
 
 def curvy_path(
     p0,
     p1,
-    variation_division=0.02,
-    f_variation=lambda x: np.uniform(0, 0.2),
-    f_angle=lambda: np.random.uniform(0, 2*pi),
-    n=200
+    variation_division = 0.02,
+    f_variation = lambda x: np.uniform(0, 0.2),
+    f_angle = lambda: np.random.uniform(0, 2*pi),
+    n = 200
 ):
     return bezier(
-        vary_line(
+        vary_path(
             segmented_line(p0, p1, point_distance=variation_division),
             f_radius=f_variation,
             f_angle=f_angle
         ),
         n=n
+    )
+
+def curvy_path_to_direction(
+    p0,
+    p1,
+    length,
+    lateral_angle,
+    vertical_angle,
+    variation_division,
+    f_variation
+):
+    return curvy_path(
+        p1, p1+circle_point(p1-p0, length, lateral_angle, vertical_angle),
+        variation_division=variation_division,
+        f_variation=f_variation
     )
 
 def constant(v):
@@ -182,97 +197,159 @@ def save_stl(sdf, open_after_saving=False):
         import subprocess
         subprocess.run(["f3d", filename])
 
-# ==========
+def gen_branches(
+    path,
+    f_branch_count = lambda *args: int(np.random.uniform(0, 1.05)),
+    f_branch_length = reversed_exp_scale(0.4, 1.5),
+    f_branch_crookedness = lambda l_acc: lambda x: np.random.uniform(0, 0.1),
+    f_variation_division = constant(0.05),
+    f_lateral_angle = lambda *args: np.random.uniform(0, 2*pi),
+    f_vertical_angle = lambda *args: np.random.uniform(pi, 2*pi)
+):
+    return [
+        (l_acc, curvy_path_to_direction(
+            p0, p1, f_branch_length(l_acc),
+            lateral_angle=f_lateral_angle(l_acc),
+            vertical_angle=f_vertical_angle(l_acc),
+            variation_division=f_variation_division(l_acc),
+            f_variation=f_branch_crookedness(l_acc)
+        ))
+        for l_acc, (p0, p1) in with_accumulated_length_fractions(path)
+        for i in range(f_branch_count(l_acc))
+    ]
 
-def plant(p0, p1, f_branch_length, f_max_crookedness):
-    l0 = curvy_path(
-        p0,
-        p1,
-        f_variation=lambda x: np.random.uniform(0, sin_bell(0, 0.5)(x))
+def sdf_from_path_tree(
+    tree,
+    f_brush_size = lambda level, **kwargs: constant(0.01),
+    f_k_brush = lambda level, **kwargs: constant(0.01),
+    f_k_paths = constant(0.02),
+    parent_kwargs = {}
+):
+    f_args = dict(tree.get('kwargs'), **{'parent_kwargs': parent_kwargs})
+
+    path_brush_size = f_brush_size(**f_args)
+    parent_kwargs = {
+        'f_brush_size': path_brush_size,
+    }
+
+    return reduce(
+        lambda a, b: a | b.k(f_k_paths(**f_args)),
+        [
+            sdf_path(
+                tree.get('path'),
+                f_brush_size = f_brush_size(**f_args),
+                f_k = f_k_brush(**f_args)
+            )
+        ] + [
+            sdf_from_path_tree(child, f_brush_size, f_k_brush, f_k_paths, parent_kwargs)
+            for child in tree.get('children')
+        ]
     )
-    lines = []
 
-    branch_distance = 0.20
-    branch_distance_threshold = 0.20
-    branch_distance_top_threshold = 0.40
-    last_branch = 0
-    cumulative_length = 0
-    total_length = length(l0)
+def tree_to_list_of_paths(tree):
 
-    for p0, p1 in zip(l0[0:], l0[1:-1]):
+    def _flatten(t):
+        return [item for sublist in t for item in sublist]
 
-        cumulative_length += np.linalg.norm(p1-p0)
+    def _traverse(tree, paths=[]):
+        if not tree.get('children'):
+            return [tree.get('path')]
+        return [tree.get('path')]+_flatten([_traverse(c) for c in tree.get('children')])
 
-        can_branch = cumulative_length-branch_distance_threshold > last_branch + branch_distance
-        not_too_high = cumulative_length < total_length-branch_distance_top_threshold
-        if can_branch and not_too_high:
-            x = cumulative_length/total_length
 
-            last_branch = cumulative_length
+    return list(_traverse(tree))
 
-            for i in range(np.random.randint(1, 4)):
-                branch_lateral_angle = np.random.uniform(0, 2*pi)
-                branch_vertical_angle = np.random.uniform(pi, 2*pi)
-                branch_crookedness = lambda x: np.random.uniform(0, f_max_crookedness(x))
+def setup():
+    parser = argparse.ArgumentParser(description='Process some integers.')
+    parser.add_argument('--samples', default='2^16',
+                        help='SDF render samples count')
+    parser.add_argument('--seed', type=int, default=int(time()),
+                        help='SDF render samples count')
+    parser.add_argument('--save', action='store_true', default=False)
+    parser.add_argument('--lineplot', action='store_true', default=False)
+    args = parser.parse_args()
 
-                p2 = circle_point(
-                    p1-p0,
-                    f_branch_length(x),
-                    branch_lateral_angle,
-                    branch_vertical_angle
-                )
+    return args
 
-                branch_curve = curvy_path(
-                    p1,
-                    p1+p2,
-                    variation_division=0.05,
-                    f_variation=branch_crookedness
-                )
-                #lines.append(bcps)
-                lines.append((x, branch_curve))
-
-    return (l0, lines)
-
-parser = argparse.ArgumentParser(description='Process some integers.')
-parser.add_argument('--samples', default='2^16',
-                    help='SDF render samples count')
-parser.add_argument('--seed', type=int, default=int(time()),
-                    help='SDF render samples count')
-parser.add_argument('--save', action='store_true', default=False)
-parser.add_argument('--lineplot', action='store_true', default=False)
-args = parser.parse_args()
+args = setup()
 
 print(f"RANDOM SEED {args.seed}")
 
 np.random.seed(args.seed)
 
-stem, lines = plant(
+#####
+
+stem = curvy_path(
     vec(0, 0, -1), vec(0, 0, 1),
-    f_branch_length = reversed_exp_scale(0.4, 1.5),
-    f_max_crookedness = reversed_exp_scale(0.05, 0.2)
+    f_variation=lambda x: np.random.uniform(0, sin_bell(0, 0.5)(x))
 )
 
-if args.lineplot:
-    plot_lines_and_points([stem]+[l for (x, l) in lines])
-
-f_stem_brush_size = reversed_exp_scale(0.02, 0.2)
-
-blob = sdf_path(
+branches = gen_branches(
     stem,
-    f_brush_size = f_stem_brush_size,
-    f_k = constant(0.01), #reversed_exp_scale(0.01, 0.05)
+    f_branch_count = lambda l_acc: (
+        0.20 < l_acc and 0.9 > l_acc
+        and bool(int(np.random.uniform(0, 1.02)))
+    ) * np.random.randint(1, 4),
+    f_branch_length = reversed_exp_scale(0.4, 1.5),
+    f_branch_crookedness = lambda l_acc:
+        lambda x: np.random.uniform(0, reversed_exp_scale(0.05, 0.2)(l_acc)),
 )
 
-for (x, l) in lines:
-    branch_blob = sdf_path(
-        l,
-        f_brush_size = reversed_exp_scale(0.01, f_stem_brush_size(x)*0.7),
-        f_k = reversed_exp_scale(0.01, 0.05)
-    )
+path_tree = {
+    'path': stem,
+    'kwargs': {
+        'level': 0,
+    },
+    'children': list(map(lambda b: ({
+        'path': b[1],
+        'kwargs': {
+            'l_acc_parent': b[0],
+            'level': 1
+        },
+        'children': []
+    }), branches))
+}
 
-    blob = blob | branch_blob.k(0.02)
+"""
+path_tree['children'][0]['children'] = list(map(lambda b: ({
+    'path': b[1],
+    'kwargs': {
+        'l_acc_parent': b[0],
+        'level': 2
+    },
+    'children': []
+}), gen_branches(
+    path_tree['children'][0]['path'],
+    f_branch_count = lambda l_acc: (
+        0.20 < l_acc and 0.9 > l_acc
+        and bool(int(np.random.uniform(0, 1.02)))
+    ) * np.random.randint(1, 4),
+    f_branch_length = reversed_exp_scale(0.4, 1.5),
+    f_branch_crookedness = lambda l_acc:
+        lambda x: np.random.uniform(0, reversed_exp_scale(0.05, 0.2)(l_acc)),
+)))
+"""
+
+paths = tree_to_list_of_paths(path_tree)
+if args.lineplot: plot_lines_and_points(tree_to_list_of_paths(path_tree))
+
+blob = sdf_from_path_tree(
+    path_tree,
+    f_brush_size = lambda level, **kwargs:
+        reversed_exp_scale(0.02, 0.2) if level==0 else
+        reversed_exp_scale(
+            0.01,
+            kwargs['parent_kwargs']['f_brush_size'](kwargs.get('l_acc_parent'))
+        )
+    ,
+    f_k_brush = lambda level, **kwargs: [
+        constant(0.01),
+        reversed_exp_scale(0.01, 0.05),
+        reversed_exp_scale(0.01, 0.05)
+    ][level],
+    f_k_paths = constant(0.02)
+)
 
 blob = blob & slab(z0=-1)
 
-if args.save:
-    save_stl(blob, open_after_saving=True)
+if args.save: save_stl(blob, open_after_saving=True)
