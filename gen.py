@@ -1,16 +1,11 @@
+import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 import itertools
 from scipy.special import comb
 from math import *
-import sys
 from sdf import *
-import os
-
-DEBUG = bool(os.environ.get('DEBUG'))
-if(DEBUG): print("\nDEBUG\n")
-
-#np.random.seed(19680801)
+from time import time
 
 def vec(*ps):
     return np.array(ps, dtype=np.float64)
@@ -114,14 +109,18 @@ def segmented_line(p0, p1, point_distance=0.5):
 
 def vary_line(
     ps,
-    f_radius=lambda: np.uniform(0, 0.2),
-    f_angle=lambda: np.random.uniform(0, 2*pi)):
+    f_radius=lambda x: np.uniform(0, 0.2),
+    f_angle=lambda: np.random.uniform(0, 2*pi)
+):
 
     line = [ps[0]]
-    for _p0, _p1 in zip(ps[0:], ps[1:-1]):
+    total_length = length(ps)
+    cumulative_length = 0
+    for _p0, _p1 in zip(ps, ps[1:-1]):
+        cumulative_length += np.linalg.norm(_p1-_p0)
         _p3 = circle_point(
             _p1-_p0,
-            f_radius(),
+            f_radius(cumulative_length/total_length),
             f_angle(),
             0
         )
@@ -130,87 +129,150 @@ def vary_line(
     line.append(ps[-1])
     return np.array(line)
 
-def plant_stem(p0, p1):
-    control_points = vary_line(
-        segmented_line(p0, p1, point_distance=0.02),
-        lambda: np.random.uniform(0, 0.2)
+def curvy_path(
+    p0,
+    p1,
+    variation_division=0.02,
+    f_variation=lambda x: np.uniform(0, 0.2),
+    f_angle=lambda: np.random.uniform(0, 2*pi),
+    n=200
+):
+    return bezier(
+        vary_line(
+            segmented_line(p0, p1, point_distance=variation_division),
+            f_radius=f_variation,
+            f_angle=f_angle
+        ),
+        n=n
     )
-    return bezier(control_points, n=100)
 
-def plant(p0, p1):
-    l0 = plant_stem(p0, p1)
-    lines = []
+def constant(v):
+    return lambda *args, **kwargs: v
 
-    branch_distance = 0.3
-    last_branch = 0
-    cumulative_length = 0
-    for p0, p1 in zip(l0[0:], l0[1:-1]):
-        cumulative_length += np.linalg.norm(p1-p0)
-        if cumulative_length > last_branch + branch_distance:
+def reversed_exp_scale(min, max):
+    return lambda x: exponential_scale(1-x, min, max)
 
-            last_branch = cumulative_length
+def sin_bell(min, max):
+    return lambda x: sin(x*pi)*(max+min)-min
 
-            branch_lateral_angle = np.random.uniform(0, 2*pi)
-            branch_vertical_angle = np.random.uniform(pi, 2*pi)
-            branch_length = np.random.uniform(0.4, 0.9)
+def sdf_path(l, f_brush_size, f_k):
 
-            p2 = circle_point(
-                p1-p0,
-                branch_length,
-                branch_lateral_angle,
-                branch_vertical_angle
-            )
-            branch_base_line = segmented_line(p1, p1+p2, point_distance=0.05)
-            bcps = vary_line(
-                branch_base_line,
-                lambda: np.random.uniform(0, 0.05)
-            )
-            lines.append(bezier(bcps, n=20))
-
-    return (l0, lines)
-
-#lines = plant(vec(0, 0, -1), vec(0, 0, 1))
-#plot_lines_and_points(lines)
-
-#def render_lines():
-
-from sdf import *
-
-filename = 'blobby.stl'
-stem, lines = plant(vec(0, 0, -1), vec(0, 0, 1))
-
-def sdf_line(l, base=None):
-    blob = base or sphere(0.01, l[0])
     total_length = length(l)
     cumulative_length = 0
+    blob = sphere(f_brush_size(0), l[0])
+
     for p0, p1 in zip(l, l[1:]):
         cumulative_length += np.linalg.norm(p1-p0)
-
-        x = 1 - cumulative_length/total_length
-        k = exponential_scale(x, 0.1, 0.5)
-        #print(k)
-        blob = blob | sphere(0.01, p1).k(k)
+        x = cumulative_length/total_length
+        blob = blob | sphere(f_brush_size(x), p1).k(f_k(x))
 
     return blob
 
-blob = sdf_line(stem)
+def save_stl(sdf, open_after_saving=False):
+    from datetime import datetime
 
-for l in lines:
-    total_length = length(l)
+    postfix = datetime.now().strftime('%d-%m-%Y_%H-%M')
+    filename = f'out/blobby_{postfix}.stl'
+
+    print(f"SAVING {filename}")
+    print(f"SAMPLES {args.samples}")
+    sdf.save(filename, samples=eval(args.samples.replace("^", "**")))
+
+    if open_after_saving:
+        import subprocess
+        subprocess.run(["f3d", filename])
+
+# ==========
+
+def plant(p0, p1, f_branch_length, f_max_crookedness):
+    l0 = curvy_path(
+        p0,
+        p1,
+        f_variation=lambda x: np.random.uniform(0, sin_bell(0, 0.5)(x))
+    )
+    lines = []
+
+    branch_distance = 0.20
+    branch_distance_threshold = 0.20
+    branch_distance_top_threshold = 0.40
+    last_branch = 0
     cumulative_length = 0
-    for p0, p1 in zip(l, l[1:]):
+    total_length = length(l0)
+
+    for p0, p1 in zip(l0[0:], l0[1:-1]):
+
         cumulative_length += np.linalg.norm(p1-p0)
-        x = 1 - cumulative_length/total_length
-        k = exponential_scale(x, 0.02, 0.2)
-        blob = blob | sphere(0.05, p1).k(k)
 
-#blob = blob.erode(0.01)
-#blob = stem_blob | branch_blob.k(0.5)
+        can_branch = cumulative_length-branch_distance_threshold > last_branch + branch_distance
+        not_too_high = cumulative_length < total_length-branch_distance_top_threshold
+        if can_branch and not_too_high:
+            x = cumulative_length/total_length
 
-ground = box((3, 3, 0.5), stem[0])
-blob = blob-ground
+            last_branch = cumulative_length
 
-blob.save(filename, samples=2**24)
+            for i in range(np.random.randint(1, 4)):
+                branch_lateral_angle = np.random.uniform(0, 2*pi)
+                branch_vertical_angle = np.random.uniform(pi, 2*pi)
+                branch_crookedness = lambda x: np.random.uniform(0, f_max_crookedness(x))
 
-import subprocess
-subprocess.run(["open", filename])
+                p2 = circle_point(
+                    p1-p0,
+                    f_branch_length(x),
+                    branch_lateral_angle,
+                    branch_vertical_angle
+                )
+
+                branch_curve = curvy_path(
+                    p1,
+                    p1+p2,
+                    variation_division=0.05,
+                    f_variation=branch_crookedness
+                )
+                #lines.append(bcps)
+                lines.append((x, branch_curve))
+
+    return (l0, lines)
+
+parser = argparse.ArgumentParser(description='Process some integers.')
+parser.add_argument('--samples', default='2^16',
+                    help='SDF render samples count')
+parser.add_argument('--seed', type=int, default=int(time()),
+                    help='SDF render samples count')
+parser.add_argument('--save', action='store_true', default=False)
+parser.add_argument('--lineplot', action='store_true', default=False)
+args = parser.parse_args()
+
+print(f"RANDOM SEED {args.seed}")
+
+np.random.seed(args.seed)
+
+stem, lines = plant(
+    vec(0, 0, -1), vec(0, 0, 1),
+    f_branch_length = reversed_exp_scale(0.4, 1.5),
+    f_max_crookedness = reversed_exp_scale(0.05, 0.2)
+)
+
+if args.lineplot:
+    plot_lines_and_points([stem]+[l for (x, l) in lines])
+
+f_stem_brush_size = reversed_exp_scale(0.02, 0.2)
+
+blob = sdf_path(
+    stem,
+    f_brush_size = f_stem_brush_size,
+    f_k = constant(0.01), #reversed_exp_scale(0.01, 0.05)
+)
+
+for (x, l) in lines:
+    branch_blob = sdf_path(
+        l,
+        f_brush_size = reversed_exp_scale(0.01, f_stem_brush_size(x)*0.7),
+        f_k = reversed_exp_scale(0.01, 0.05)
+    )
+
+    blob = blob | branch_blob.k(0.02)
+
+blob = blob & slab(z0=-1)
+
+if args.save:
+    save_stl(blob, open_after_saving=True)
