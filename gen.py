@@ -1,5 +1,4 @@
 import argparse
-import matplotlib.pyplot as plt
 import numpy as np
 import itertools
 from functools import reduce
@@ -38,6 +37,7 @@ def cartesian_coordinates(r, theta, phi):
     ])
 
 def plot_lines_and_points(lines, points=None):
+    import matplotlib.pyplot as plt
 
     fig = plt.figure(figsize=(8, 8))
     ax = fig.add_subplot(projection='3d')
@@ -120,12 +120,7 @@ def vary_path(
     f_angle=lambda: np.random.uniform(0, 2*pi)
 ):
     return np.array([path[0]]+[
-        p1 + circle_point(
-            p1-p0,
-            f_radius(l_acc),
-            f_angle(),
-            0
-        )
+        p1 + circle_point(p1-p0, f_radius(l_acc), f_angle(), 0)
         for l_acc, (p0, p1) in with_accumulated_length_fractions(path)[:-1]
     ]+[path[-1]])
 
@@ -197,27 +192,6 @@ def save_stl(sdf, open_after_saving=False):
         import subprocess
         subprocess.run(["f3d", filename])
 
-def gen_branches(
-    path,
-    f_branch_count = lambda *args: int(np.random.uniform(0, 1.05)),
-    f_branch_length = reversed_exp_scale(0.4, 1.5),
-    f_branch_crookedness = lambda l_acc: lambda x: np.random.uniform(0, 0.1),
-    f_variation_division = constant(0.05),
-    f_lateral_angle = lambda *args: np.random.uniform(0, 2*pi),
-    f_vertical_angle = lambda *args: np.random.uniform(pi, 2*pi)
-):
-    return [
-        (l_acc, curvy_path_to_direction(
-            p0, p1, f_branch_length(l_acc),
-            lateral_angle=f_lateral_angle(l_acc),
-            vertical_angle=f_vertical_angle(l_acc),
-            variation_division=f_variation_division(l_acc),
-            f_variation=f_branch_crookedness(l_acc)
-        ))
-        for l_acc, (p0, p1) in with_accumulated_length_fractions(path)
-        for i in range(f_branch_count(l_acc))
-    ]
-
 def sdf_from_path_tree(
     tree,
     f_brush_size = lambda level, **kwargs: constant(0.01),
@@ -225,7 +199,7 @@ def sdf_from_path_tree(
     f_k_paths = constant(0.02),
     parent_kwargs = {}
 ):
-    f_args = dict(tree.get('kwargs'), **{'parent_kwargs': parent_kwargs})
+    f_args = dict(tree.get('attr'), **{'parent_kwargs': parent_kwargs})
 
     path_brush_size = f_brush_size(**f_args)
     parent_kwargs = {
@@ -246,8 +220,7 @@ def sdf_from_path_tree(
         ]
     )
 
-def tree_to_list_of_paths(tree):
-
+def tree_to_paths(tree):
     def _flatten(t):
         return [item for sublist in t for item in sublist]
 
@@ -260,16 +233,17 @@ def tree_to_list_of_paths(tree):
     return list(_traverse(tree))
 
 def setup():
-    parser = argparse.ArgumentParser(description='Process some integers.')
+    parser = argparse.ArgumentParser()
     parser.add_argument('--samples', default='2^16',
                         help='SDF render samples count')
     parser.add_argument('--seed', type=int, default=int(time()),
-                        help='SDF render samples count')
+                        help='random seed')
     parser.add_argument('--save', action='store_true', default=False)
     parser.add_argument('--lineplot', action='store_true', default=False)
     args = parser.parse_args()
 
     return args
+
 
 args = setup()
 
@@ -277,61 +251,69 @@ print(f"RANDOM SEED {args.seed}")
 
 np.random.seed(args.seed)
 
-#####
+def gen_tree(p0, p1, **kwargs):
+    def _gen_tree(_tree={}, **kwargs):
+        _level = _tree.get('attr').get('level')
+        if _tree.get('attr').get('level') >= 2: return _tree
 
-stem = curvy_path(
-    vec(0, 0, -1), vec(0, 0, 1),
-    f_variation=lambda x: np.random.uniform(0, sin_bell(0, 0.5)(x))
+        _tree['children'] = [
+            _gen_tree({
+                'path': curvy_path_to_direction(
+                    p0, p1,
+                    length=kwargs.get('f_branch_length')(l_acc),
+                    lateral_angle=kwargs.get('f_lateral_angle')(l_acc),
+                    vertical_angle=kwargs.get('f_vertical_angle')(l_acc),
+                    variation_division=kwargs.get('f_variation_division')(l_acc),
+                    f_variation=kwargs.get('f_variation')(l_acc)
+                ),
+                'attr': {
+                    'level': _level+1,
+                    'l_acc_parent': l_acc
+                },
+                'children': []
+            }, **kwargs)
+
+            for l_acc, (p0, p1) in with_accumulated_length_fractions(_tree.get('path'))
+            for i in range(kwargs.get('f_branch_count')(l_acc, _level))
+        ]
+
+        return _tree
+
+    return _gen_tree(
+        **kwargs,
+        _tree = {
+            'path': curvy_path(
+                np.array(p0), np.array(p1),
+                variation_division = kwargs.get('f_variation_division')(0),
+                f_variation = kwargs.get('f_variation')(0)
+            ),
+            'attr': {
+                'level': 0,
+            },
+            'children': []
+        }
+    )
+
+path_tree = gen_tree(
+    (0, 0, -1), (0, 0, 1),
+    f_branch_count = lambda l_acc, level:
+        np.random.randint(1, 4) * (
+            0.20 < l_acc and
+            0.9 > l_acc and
+            bool(int(np.random.uniform(0, 1.02-level/40.0)))
+        ),
+    f_branch_length = reversed_exp_scale(0.4, 1.5),
+    f_variation = lambda l_acc: lambda x:
+        np.random.uniform(
+            0,
+            reversed_exp_scale(0.05, 0.2)(l_acc)
+        ),
+    f_variation_division = constant(0.05),
+    f_lateral_angle = lambda *args: np.random.uniform(0, 2*pi),
+    f_vertical_angle = lambda *args: np.random.uniform(pi, 2*pi)
 )
 
-branches = gen_branches(
-    stem,
-    f_branch_count = lambda l_acc: (
-        0.20 < l_acc and 0.9 > l_acc
-        and bool(int(np.random.uniform(0, 1.02)))
-    ) * np.random.randint(1, 4),
-    f_branch_length = reversed_exp_scale(0.4, 1.5),
-    f_branch_crookedness = lambda l_acc:
-        lambda x: np.random.uniform(0, reversed_exp_scale(0.05, 0.2)(l_acc)),
-)
-
-path_tree = {
-    'path': stem,
-    'kwargs': {
-        'level': 0,
-    },
-    'children': list(map(lambda b: ({
-        'path': b[1],
-        'kwargs': {
-            'l_acc_parent': b[0],
-            'level': 1
-        },
-        'children': []
-    }), branches))
-}
-
-"""
-path_tree['children'][0]['children'] = list(map(lambda b: ({
-    'path': b[1],
-    'kwargs': {
-        'l_acc_parent': b[0],
-        'level': 2
-    },
-    'children': []
-}), gen_branches(
-    path_tree['children'][0]['path'],
-    f_branch_count = lambda l_acc: (
-        0.20 < l_acc and 0.9 > l_acc
-        and bool(int(np.random.uniform(0, 1.02)))
-    ) * np.random.randint(1, 4),
-    f_branch_length = reversed_exp_scale(0.4, 1.5),
-    f_branch_crookedness = lambda l_acc:
-        lambda x: np.random.uniform(0, reversed_exp_scale(0.05, 0.2)(l_acc)),
-)))
-"""
-
-paths = tree_to_list_of_paths(path_tree)
-if args.lineplot: plot_lines_and_points(tree_to_list_of_paths(path_tree))
+if args.lineplot: plot_lines_and_points(tree_to_paths(path_tree))
 
 blob = sdf_from_path_tree(
     path_tree,
@@ -339,7 +321,7 @@ blob = sdf_from_path_tree(
         reversed_exp_scale(0.02, 0.2) if level==0 else
         reversed_exp_scale(
             0.01,
-            kwargs['parent_kwargs']['f_brush_size'](kwargs.get('l_acc_parent'))
+            kwargs['parent_kwargs']['f_brush_size'](kwargs.get('l_acc_parent'))*0.6
         )
     ,
     f_k_brush = lambda level, **kwargs: [
