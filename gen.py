@@ -122,8 +122,8 @@ def with_accumulated_length_fractions(path):
 
 def vary_path(
     path,
-    f_radius=lambda x: np.random.uniform(0, 0.2),
-    f_angle=lambda: np.random.uniform(0, 2*pi)
+    f_radius = lambda x: np.random.uniform(0, 0.2),
+    f_angle = lambda: np.random.uniform(0, 2*pi)
 ):
     return np.array([path[0]]+[
         p1 + circle_point(p1-p0, f_radius(l_acc), f_angle(), 0)
@@ -172,6 +172,9 @@ def reversed_exp_scale(min, max):
 
 def sin_bell(min, max):
     return lambda x: sin(x*pi)*(max+min)-min
+
+def flatten(t):
+    return [item for sublist in t for item in sublist]
 
 def sdf_path(l, f_brush_size, f_k):
     total_length = length(l)
@@ -227,9 +230,6 @@ def sdf_from_path_tree(
         ]
     )
 
-def flatten(t):
-    return [item for sublist in t for item in sublist]
-
 def tree_to_paths(tree):
     def _traverse(tree, paths=[]):
         if not tree.get('children'):
@@ -237,19 +237,6 @@ def tree_to_paths(tree):
         return [tree.get('path')]+flatten([_traverse(c) for c in tree.get('children')])
 
     return list(_traverse(tree))
-
-def setup():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--samples', default='2^16',
-                        help='SDF render samples count')
-    parser.add_argument('--seed', type=int,
-                        default=np.random.randint(0, 2**32-1),
-                        help='random seed')
-    parser.add_argument('--save', action='store_true', default=False)
-    parser.add_argument('--lineplot', action='store_true', default=False)
-    args = parser.parse_args()
-
-    return args
 
 def gen_tree(p0, p1, max_depth=2, **kwargs):
     def _gen_tree(_tree={}, **kwargs):
@@ -296,24 +283,37 @@ def gen_tree(p0, p1, max_depth=2, **kwargs):
         }
     )
 
-args = setup()
+def setup():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--samples', default='2^16',
+                        help='SDF render samples count')
+    parser.add_argument('--seed', type=int,
+                        default=np.random.randint(0, 2**32-1),
+                        help='random seed')
+    parser.add_argument('--save', action='store_true', default=False)
+    parser.add_argument('--lineplot', action='store_true', default=False)
+    args = parser.parse_args()
 
-print(f"RANDOM SEED {args.seed}")
-
-np.random.seed(args.seed)
-
-p0 = np.array((0.0, 0.0, -1.0))
-p1 = np.array((0.0, 0.0, 1.0))
+    return args
 
 if __name__ == "__main__":
+    args = setup()
+
+    print(f"RANDOM SEED {args.seed}")
+
+    np.random.seed(args.seed)
+
+    p0 = np.array((0.0, 0.0, -1.0))
+    p1 = np.array((0.0, 0.0, 1.0))
+
     path_tree = gen_tree(
         p0, p1,
-        max_depth=2,
+        max_depth = 2,
         f_branch_count = lambda l_acc, level:
             np.random.randint(1, 4 if level == 0 else 2) * (
-                0.1 < l_acc and
+                0.2 < l_acc and
                 0.99 > l_acc and
-                1.0 < np.random.uniform(0, 1.02)
+                0.98 < np.random.random()
             ),
         f_branch_length = reversed_exp_scale(0.1, 0.8),
         f_variation = lambda l_acc: lambda x:
