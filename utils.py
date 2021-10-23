@@ -157,6 +157,18 @@ def sin_bell(min, max):
 def flatten(t):
     return [item for sublist in t for item in sublist]
 
+def sdf_path(l, f_brush_size=constant(0.1), f_k=constant(0.2)):
+    total_length = length(l)
+    cumulative_length = 0
+    blob = sphere(f_brush_size(0), l[0])
+
+    for p0, p1 in zip(l, l[1:]):
+        cumulative_length += np.linalg.norm(p1-p0)
+        x = cumulative_length/total_length
+        blob = blob | sphere(f_brush_size(x), p1).k(f_k(x))
+
+    return blob
+
 def save_stl(sdf, samples=2**16, name_prefix="model", open_after_saving=False):
     from datetime import datetime
     from termcolor import colored

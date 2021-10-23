@@ -9,18 +9,6 @@ from sdf import *
 from time import time
 from utils import *
 
-def sdf_path(l, f_brush_size, f_k):
-    total_length = length(l)
-    cumulative_length = 0
-    blob = sphere(f_brush_size(0), l[0])
-
-    for p0, p1 in zip(l, l[1:]):
-        cumulative_length += np.linalg.norm(p1-p0)
-        x = cumulative_length/total_length
-        blob = blob | sphere(f_brush_size(x), p1).k(f_k(x))
-
-    return blob
-
 def sdf_from_path_tree(
     tree,
     f_brush_size = lambda level, **kwargs: constant(0.01),
