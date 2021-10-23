@@ -159,11 +159,12 @@ def flatten(t):
 
 def save_stl(sdf, samples=2**16, name_prefix="model", open_after_saving=False):
     from datetime import datetime
+    from termcolor import colored
 
     postfix = datetime.now().strftime('%d-%m-%Y_%H-%M')
     filename = f'out/{name_prefix}_{postfix}.stl'
 
-    print(f"SAVING {filename}")
+    print(f"SAVING {colored(filename, 'green')}\n\n")
     sdf.save(filename, samples=samples)
 
     if open_after_saving:
