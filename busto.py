@@ -213,7 +213,7 @@ def busto():
     head_tilt = np.random.uniform(-pi/13, pi/13)
     f_head = f_head.rotate(head_tilt, X)
     #f_head = f_head.rotate(-pi/15, Y)
-    f_head = f_head.rotate(pi/15, Z)
+    f_head = f_head.rotate(pi/15, Y)
 
     # neck
     f_neck = rounded_cone(0.7, 0.6, 1.2).translate((0, 1.4, -0.9)).rotate(pi/9, X)
